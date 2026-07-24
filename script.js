@@ -114,6 +114,29 @@ async function fetchJson(url) {
   return data;
 }
 
+// The results endpoint returns one row per driver per race, and silently caps
+// each request's row count well below any `limit` we ask for. A season with
+// more than a handful of races needs several requests to see every round, so
+// we page through with `offset` until MRData.total says we've covered it all.
+// Without this, later races in a season would look like they never produced
+// results and get mislabeled as cancelled.
+async function fetchRoundsWithResults(season) {
+  const pageSize = 100;
+  const rounds = new Set();
+  let offset = 0;
+  let total = Infinity;
+  let guard = 0;
+  while (offset < total && guard < 30) {
+    const json = await fetchJson(`${API_BASE}/${season}/results.json?limit=${pageSize}&offset=${offset}`);
+    const races = json.MRData.RaceTable.Races || [];
+    races.forEach(r => rounds.add(r.round));
+    total = parseInt(json.MRData.total, 10) || 0;
+    offset += pageSize;
+    guard++;
+  }
+  return rounds;
+}
+
 async function loadTab() {
   showLoading();
   nextRaceBanner.classList.add("hidden");
@@ -128,16 +151,11 @@ async function loadTab() {
         const json = await fetchJson(`${API_BASE}/${state.season}/constructorStandings.json`);
         data = json.MRData.StandingsTable.StandingsLists[0]?.ConstructorStandings || [];
       } else if (state.tab === "schedule") {
-        const [scheduleJson, resultsJson] = await Promise.all([
+        const [scheduleJson, roundsWithResults] = await Promise.all([
           fetchJson(`${API_BASE}/${state.season}.json?limit=100`),
-          fetchJson(`${API_BASE}/${state.season}/results.json?limit=1000`),
+          fetchRoundsWithResults(state.season),
         ]);
         const races = scheduleJson.MRData.RaceTable.Races || [];
-        // A round only appears here if it actually produced classified results.
-        // A round that was on the calendar, is in the past, but never produced
-        // results was cancelled (as opposed to merely shortened/red-flagged,
-        // which still yields a classified result set).
-        const roundsWithResults = new Set((resultsJson.MRData.RaceTable.Races || []).map(r => r.round));
         data = { races, roundsWithResults };
       }
       state.cache[cacheKey] = data;
